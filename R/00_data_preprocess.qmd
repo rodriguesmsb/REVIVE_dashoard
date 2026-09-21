@@ -1,0 +1,218 @@
+---
+title: "REVIVE: longitudinal data preparation"
+format:
+  html:
+    toc: true
+execute:
+  echo: true
+  cache: false
+---
+
+## Purpose
+
+Read the infection and vaccination CSV exports in `data/`, apply the REDCap
+dictionary labels, and consolidate reports by **`record_id`** into
+`data/preprocessed/longitudinal_events.json`. Source CSVs are never modified.
+
+Each participant has an array of infections and an array of vaccinations.
+This preserves multiple events over time without a many-to-many join.
+The application JSON also includes `Sex`, `Age`, `Race`, `Immunosuppression`,
+and `SOTRs`, coalesced across rows with the same ID. Participants without
+reported infections or vaccinations have empty event arrays (`[]`).
+
+## Setup
+
+Run this document from the project root or from `R/`. It requires the
+`readr` and `jsonlite` R packages; rendering also requires Quarto and `knitr`.
+Reusable transformation functions live in `R/helpers_preprocess.R` and
+`R/helpers_participants.R`.
+
+```{r}
+#| label: setup
+project_root <- if (file.exists("R/helpers_preprocess.R")) {
+  normalizePath(".")
+} else if (file.exists("../R/helpers_preprocess.R")) {
+  normalizePath("..")
+} else {
+  stop("Run this document from the REVIVE project root or its R directory.")
+}
+source(file.path(project_root, "R", "helpers_preprocess.R"))
+source(file.path(project_root, "R", "helpers_participants.R"))
+data_dir <- file.path(project_root, "data")
+```
+
+## Dictionary and retained fields
+
+The mappings below are transcribed from
+[`ref/RespiratoryViralInfectionVacci.pdf`](../ref/RespiratoryViralInfectionVacci.pdf),
+printed page **120** for infections and page **79** for vaccinations.
+All six slots use the same mapping within their event category. Labels
+come from the field values, not the export filenames: a file named
+“FluVaccines” can also contain COVID-19 vaccinations.
+
+```{r}
+#| label: dictionary
+dictionary <- revive_event_dictionary()
+data.frame(
+  code = names(dictionary$infection),
+  infection = unname(dictionary$infection),
+  vaccine_type = unname(dictionary$vaccination)
+) |> knitr::kable()
+```
+
+| Source | ID | Type fields | Date fields |
+|:--|:--|:--|:--|
+| Infections | `record_id` | `new_inf1` through `new_inf6` | `new_inf1_dt` through `new_inf6_dt` |
+| Vaccinations | `record_id` | `new_vax_recvd`, `new2_vax_recvd` through `new6_vax_recvd` | `new_vax_dt`, `new2_vax_dt` through `new6_vax_dt` |
+
+Slots are discovered from column names, so additional numbered slots follow
+the same rules. Completely blank type/date pairs are ignored. Partially
+filled reports are retained and flagged. Unknown codes become a `null`
+label; missing or invalid dates become `null`. The audit RDS preserves
+the original codes/dates and identifies the problem.
+
+IDs remain strings, including leading zeros. Dates are validated and stored
+as `YYYY-MM-DD`. Source dates may use `YYYY-MM-DD`, `MM/DD/YYYY`, or
+`MM-DD-YYYY`, consistent with the dictionary's month/day/year fields.
+
+## Prepare and validate
+
+The block below selects participant attributes from
+`RespiratoryViralInfe_DATA_2026-09-21_1151.csv`, coalesces nonmissing values
+within each `record_id`, applies dictionary labels, and joins them to the
+event histories by ID. Conflicting nonmissing values stop the run so that
+a participant's attributes are never chosen arbitrarily.
+
+| Source fields | JSON variable | Representation |
+|:--|:--|:--|
+| `sex` | `Sex` | Dictionary label (page 19) |
+| `age_calc_consent` | `Age` | Numeric age at consent (page 17) |
+| `race___*` | `Race` | Array of selected race labels (page 19) |
+| `is_meds_elig___*` | `Immunosuppression` | Array of selected medication labels (page 23) |
+| `prior_tx_organ___*` | `SOTRs` | Array of selected **prior** transplant organs |
+
+Checkbox `1` means selected and `0` means unselected. An entirely missing
+checkbox group becomes `null`; an observed group with no selections becomes
+`[]`. Missing scalar attributes become `null`. The medication choice
+`is_meds_elig___0 = 1` explicitly produces `["None"]`.
+
+The PDF embeds `prior_tx_organ` without listing its options on pages 21–22.
+For `SOTRs`, the code assumes the organ choices use the same coding as
+`organ_tx_28d_type` on page 135; the prior-transplant branching rules confirm
+codes 1 (Kidney) and 2 (Liver). This assumption is documented in the helper's
+dictionary. `SOTRs` describes prior transplants only, not the most recent
+transplant or overall transplant-recipient status.
+
+```{r}
+#| label: prepare-data-and-participants
+participant_data <- read_revive_participants(file.path(
+  data_dir, "RespiratoryViralInfe_DATA_2026-09-21_1151.csv"
+))
+events <- preprocess_revive_data(
+  data_dir,
+  output_dir = file.path(data_dir, "preprocessed"),
+  participant_data = participant_data
+)
+participants <- jsonlite::read_json(
+  file.path(data_dir, "preprocessed", "longitudinal_events.json"),
+  simplifyVector = FALSE
+)
+```
+
+This is a full join: every ID from either the participant export or the
+event reports is retained. The full export also contains event fields, so
+the existing event importer includes those reports and removes identical
+copies from overlapping exports.
+
+The helper also writes `data/preprocessed/longitudinal_events.rds`: a long
+audit table with REDCap event/repeat identifiers, original codes/dates,
+source file/row/slot, and quality flags. These fields support review and
+are kept out of the smaller application JSON.
+
+```{r}
+#| label: summary
+# Show aggregate counts only in the rendered report.
+data.frame(
+  participants = length(participants),
+  participants_with_events = length(unique(events$record_id)),
+  infection_reports = sum(events$event_type == "infection"),
+  vaccination_reports = sum(events$event_type == "vaccination"),
+  reports_with_quality_issues = sum(events$quality_issue != ""),
+  possible_duplicate_reports = sum(events$possible_duplicate)
+) |> knitr::kable()
+```
+
+Reports sharing ID, category, type, and date are flagged as possible
+duplicates, but distinct REDCap reports are preserved. Resolve these in
+the source data before interpreting event counts as unique clinical events.
+
+The JSON uses this structure (illustrative data only):
+
+```json
+[
+  {
+    "record_id": "001",
+    "Sex": "Female",
+    "Age": 50,
+    "Race": ["Asian"],
+    "Immunosuppression": ["Tacrolimus (also known as Prograf, Envarsus XR, FK506)"],
+    "SOTRs": ["Kidney"],
+    "infections": [
+      {"infection": "COVID-19 infection", "infection_date": "2026-01-10"},
+      {"infection": "RSV infection", "infection_date": "2026-03-12"}
+    ],
+    "vaccinations": [
+      {"vaccine_type": "Flu vaccine", "vaccine_date": "2025-10-01"}
+    ]
+  }
+]
+```
+
+## Future updates and Shiny use
+
+1. Add new raw CSV exports under `data/` (subdirectories are supported).
+   **Keep the complete source history:** each run rebuilds the output from
+   the available CSVs rather than appending to the previous JSON.
+2. Export `record_id`, `redcap_event_name`, and matching type/date columns.
+   Include `redcap_repeat_instrument` and `redcap_repeat_instance` when
+   using repeating REDCap instruments. Each ID/event/repeat/category/slot
+   combination identifies one report.
+3. Rerun this document. Identical copies of the same report in overlapping
+   exports count once. New months, repeat instances, and slots are retained.
+   Conflicting versions of the same report stop the run without replacing
+   outputs; reconcile outdated exports before rerunning. If the dictionary
+   changes, update `revive_event_dictionary()` against the new dictionary.
+4. Update the participant CSV filename in the preparation block when using
+   a newer full export. Review aggregate quality counts and the audit RDS
+   before app analysis.
+
+Render from the project root:
+
+```bash
+quarto render R/00_data_preprocess.qmd
+```
+
+To generate the same datasets without rendering:
+
+```r
+source("R/helpers_preprocess.R")
+source("R/helpers_participants.R")
+participant_data <- read_revive_participants(
+  "data/RespiratoryViralInfe_DATA_2026-09-21_1151.csv"
+)
+events <- preprocess_revive_data(
+  "data", output_dir = "data/preprocessed", participant_data = participant_data
+)
+```
+
+Read the prepared JSON once at the appropriate app initialization point,
+then pass the data to modules:
+
+```{r}
+#| label: shiny-loading-example
+#| eval: false
+participants <- jsonlite::read_json(
+  "data/preprocessed/longitudinal_events.json",
+  simplifyVector = FALSE
+)
+```

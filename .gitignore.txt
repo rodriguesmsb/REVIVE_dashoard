@@ -1,0 +1,6 @@
+.RData
+.Rhistory
+.agents/
+ref/
+AGENTS.md
+data/
