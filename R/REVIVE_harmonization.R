@@ -169,6 +169,8 @@ harmonize_patients <- function(patients) {
         .default = NA_character_
       ),
       other_immunosuppression_description = dplyr::na_if(trimws(is_meds_elig_oth), ""),
-      autoimmune_medication = dplyr::na_if(trimws(autoimm_med_name), "")
+      autoimmune_medication = dplyr::na_if(trimws(autoimm_med_name), ""),
+      ig_plasma = dplyr::if_else(ig_plasma == 1, "Yes", "NO", NA_character_),
+      ig_plasma_3mo = dplyr::if_else(ig_plasma_3mo == 1, "Yes", "NO", NA_character_),
     )
 }

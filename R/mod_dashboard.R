@@ -14,11 +14,12 @@ mod_dashboard_ui <- function(id, data) {
       id = ns("sidebar"), width = 280, open = "desktop", bg = "#F4FCFB",
       tags$div(class = "filter-heading", tags$h2("Filters"), icon("sliders")),
       tags$p(class = "filter-intro", "Define the patients in your view."),
+      select_filter("study_group", "Study group", patients$study_group),
       select_filter("infection", "Infection", patients$infection, "No infection reported"),
       select_filter("vaccination", "Vaccination", patients$vaccination, "No vaccination reported"),
       select_filter("sex", "Sex", patients$sex),
-      select_filter("sotr", "SOTR", patients$sotr, "No prior organs recorded"),
-      tags$p(class = "filter-hint", "Organs from prior transplants"),
+      select_filter("sotr", "SOTR", patients$sotr, "No transplant organs recorded"),
+      tags$p(class = "filter-hint", "Organs from the most recent transplant"),
       select_filter("immunosuppression", "Immunosuppression", patients$immunosuppression),
       sliderInput(
         ns("age"), tags$span(class = "age-filter-label", "Age", textOutput(ns("age_label"), inline = TRUE)),
@@ -58,7 +59,7 @@ mod_dashboard_ui <- function(id, data) {
       bslib::card(class = "patient-card",
         bslib::card_header(
           tags$div(tags$h3("Patient details"), tags$p("One row per patient in the selected cohort.")),
-          downloadButton(ns("export_csv"), "Export CSV", class = "export-button")
+          actionButton(ns("export_options"), "Export CSV", icon = icon("download"), class = "export-button")
         ),
         bslib::card_body(DT::DTOutput(ns("patients_table")))
       ),
@@ -84,7 +85,8 @@ mod_dashboard_ui <- function(id, data) {
 
 mod_dashboard_server <- function(id, data) {
   moduleServer(id, function(input, output, session) {
-    filter_names <- c("infection", "vaccination", "sex", "sotr", "immunosuppression")
+    filter_names <- c("study_group", "infection", "vaccination", "sex", "sotr", "immunosuppression")
+    export_columns <- revive_export_columns()
     filtered_patients <- reactive({
       filters <- stats::setNames(lapply(filter_names, function(name) input[[name]]), filter_names)
       filter_revive_patients(data$patients, filters, input$age, data$age_limits)
@@ -126,10 +128,39 @@ mod_dashboard_server <- function(id, data) {
       )
     }, server = TRUE)
 
+    observeEvent(input$export_options, {
+      selected_columns <- intersect(input$export_columns, export_columns)
+      showModal(modalDialog(
+        title = "Export patient data",
+        tags$p(paste(format(nrow(filtered_patients()), big.mark = ","),
+                     "patients match the current filters.")),
+        tags$p("All displayed columns are included. Choose any additional variables to append to the CSV."),
+        selectizeInput(
+          session$ns("export_columns"), "Additional variables",
+          choices = NULL, multiple = TRUE,
+          options = list(placeholder = "Search variables", maxOptions = 100,
+                         plugins = list("remove_button"))
+        ),
+        tags$p("Leave the selection empty to download only the displayed columns."),
+        footer = tagList(
+          modalButton("Cancel"),
+          downloadButton(session$ns("export_csv"), "Download CSV", class = "export-button")
+        ),
+        easyClose = TRUE
+      ))
+      updateSelectizeInput(
+        session, "export_columns", choices = export_columns,
+        selected = selected_columns, server = TRUE
+      )
+    })
+
     output$export_csv <- downloadHandler(
       filename = function() paste0("REVIVE_patients_", Sys.Date(), ".csv"),
       content = function(file) {
-        utils::write.csv(patient_table(), file, row.names = FALSE, na = "", fileEncoding = "UTF-8")
+        export <- revive_patient_export(
+          filtered_patients(), data$patient_characteristics, input$export_columns
+        )
+        utils::write.csv(export, file, row.names = FALSE, na = "", fileEncoding = "UTF-8")
       },
       contentType = "text/csv; charset=UTF-8"
     )

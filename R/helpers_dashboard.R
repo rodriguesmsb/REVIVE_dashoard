@@ -1,74 +1,3 @@
-read_revive_dashboard_data <- function(path) {
-  if (!file.exists(path)) {
-    stop("Prepared data are missing. Run R/00_data_preprocess.qmd before starting REVIVE.")
-  }
-  people <- tryCatch(
-    jsonlite::read_json(path, simplifyVector = FALSE),
-    error = function(e) stop("The prepared JSON could not be read. Rerun R/00_data_preprocess.qmd.")
-  )
-  required <- c("record_id", "Sex", "Age", "SOTRs", "Immunosuppression", "infections", "vaccinations")
-  if (!is.list(people) || !length(people) || !all(vapply(people, function(person) {
-    is.list(person) && all(required %in% names(person)) &&
-      is.character(person$record_id) && length(person$record_id) == 1L &&
-      !is.na(person$record_id) && nzchar(person$record_id)
-  }, logical(1)))) {
-    stop("The prepared JSON must contain participant attributes and event histories. Rerun preprocessing.")
-  }
-  labels <- function(value) {
-    value <- as.character(unlist(value, use.names = FALSE))
-    sort(unique(value[!is.na(value) & nzchar(value)]))
-  }
-  event_labels <- function(reports, field) {
-    labels(lapply(reports, function(report) {
-      if (is.null(report[[field]]) || !nzchar(report[[field]])) "Type not recorded" else report[[field]]
-    }))
-  }
-  patients <- data.frame(
-    record_id = vapply(people, `[[`, character(1), "record_id"),
-    sex = vapply(people, function(person) {
-      if (is.null(person$Sex)) NA_character_ else person$Sex
-    }, character(1)),
-    age = vapply(people, function(person) {
-      if (is.null(person$Age)) NA_real_ else as.numeric(person$Age)
-    }, numeric(1)),
-    stringsAsFactors = FALSE
-  )
-  if (anyDuplicated(patients$record_id)) stop("The prepared JSON contains duplicate participant IDs.")
-  patients$infection <- lapply(people, function(person) event_labels(person$infections, "infection"))
-  patients$vaccination <- lapply(people, function(person) event_labels(person$vaccinations, "vaccine_type"))
-  patients$sotr <- lapply(people, function(person) labels(person$SOTRs))
-  patients$immunosuppression <- lapply(people, function(person) labels(person$Immunosuppression))
-
-  event_rows <- lapply(people, function(person) {
-    rows <- lapply(c("infections", "vaccinations"), function(kind) {
-      if (!length(person[[kind]])) return(NULL)
-      is_infection <- kind == "infections"
-      type_field <- if (is_infection) "infection" else "vaccine_type"
-      date_field <- if (is_infection) "infection_date" else "vaccine_date"
-      do.call(rbind, lapply(person[[kind]], function(report) {
-        raw_date <- report[[date_field]]
-        date <- if (is.null(raw_date)) as.Date(NA) else as.Date(raw_date, format = "%Y-%m-%d")
-        data.frame(
-          record_id = person$record_id,
-          event_type = if (is_infection) "Infection" else "Vaccination",
-          event_label = if (is.null(report[[type_field]])) "Type not recorded" else report[[type_field]],
-          event_date = date, stringsAsFactors = FALSE
-        )
-      }))
-    })
-    do.call(rbind, rows)
-  })
-  events <- do.call(rbind, event_rows)
-  if (is.null(events)) {
-    events <- data.frame(record_id = character(), event_type = character(),
-                         event_label = character(), event_date = as.Date(character()))
-  }
-  ages <- patients$age[is.finite(patients$age)]
-  age_limits <- if (length(ages)) c(floor(min(ages)), ceiling(max(ages))) else c(0, 100)
-  if (diff(age_limits) == 0) age_limits[2] <- age_limits[2] + 1
-  list(patients = patients, events = events, age_limits = age_limits)
-}
-
 revive_filter_choices <- function(values, missing_label = "Not recorded") {
   if (!is.list(values)) values <- as.list(values)
   levels <- sort(unique(as.character(unlist(values, use.names = FALSE))))
@@ -81,7 +10,7 @@ revive_filter_choices <- function(values, missing_label = "Not recorded") {
 
 filter_revive_patients <- function(patients, filters = list(), age = NULL, age_limits = NULL) {
   keep <- rep(TRUE, nrow(patients))
-  for (field in c("infection", "vaccination", "sex", "sotr", "immunosuppression")) {
+  for (field in c("study_group", "infection", "vaccination", "sex", "sotr", "immunosuppression")) {
     selected <- filters[[field]]
     if (!length(selected) || "__all__" %in% selected) next
     values <- if (is.list(patients[[field]])) patients[[field]] else as.list(patients[[field]])
@@ -105,13 +34,31 @@ revive_patient_table <- function(patients) {
   }
   data.frame(
     "Patient ID" = patients$record_id,
+    "Study group" = ifelse(is.na(patients$study_group), "Not recorded", patients$study_group),
+    Age = patients$age,
+    Sex = ifelse(is.na(patients$sex), "Not recorded", patients$sex),
+    Race = collapse_labels(patients$race, "Not recorded"),
+    SOTR = collapse_labels(patients$sotr, "No transplant organs recorded"),
+    Immunosuppression = collapse_labels(patients$immunosuppression, "Not recorded"),
     Infection = collapse_labels(patients$infection, "No infection reported"),
     Vaccination = collapse_labels(patients$vaccination, "No vaccination reported"),
-    Sex = ifelse(is.na(patients$sex), "Not recorded", patients$sex),
-    SOTR = collapse_labels(patients$sotr, "No prior organs recorded"),
-    Immunosuppression = collapse_labels(patients$immunosuppression, "Not recorded"),
-    Age = patients$age, check.names = FALSE, stringsAsFactors = FALSE
+    check.names = FALSE, stringsAsFactors = FALSE
   )
+}
+
+revive_export_columns <- function() {
+  # Edit this list to choose which extra variables users may download.
+  c("ig_plasma", "ig_plasma_3mo")
+}
+
+revive_patient_export <- function(patients, patient_characteristics, extra_columns = character()) {
+  export <- revive_patient_table(patients)
+  extra_columns <- intersect(extra_columns, revive_export_columns())
+  # Select only the requested columns, then align them with the filtered IDs.
+  extra <- patient_characteristics[extra_columns]
+  rows <- match(patients$record_id, patient_characteristics$record_id)
+  export[extra_columns] <- extra[rows, , drop = FALSE]
+  export
 }
 
 revive_swimmer_plot <- function(events) {
