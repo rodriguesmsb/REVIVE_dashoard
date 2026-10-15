@@ -142,5 +142,23 @@ read_revive_dashboard_data <- function(patients_path, data_dir = "data",
   events <- do.call(rbind, c(list(empty_events), event_rows))
   events$event_label[is.na(events$event_label) | events$event_label == ""] <- "Type not recorded"
 
-  generate_revive_dashboard_data(patients_harmonized, events)
+  survey_rows <- lapply(people, function(person) {
+    lapply(person$surveys, function(report) {
+      data.frame(
+        record_id = person$record_id,
+        survey_month = as.integer(report$survey_month)[1],
+        survey_status = as.character(report$survey_status)[1],
+        survey_date = as.Date(as.character(report$survey_date)[1], format = "%Y-%m-%d")
+      )
+    })
+  })
+  empty_surveys <- data.frame(
+    record_id = character(), survey_month = integer(),
+    survey_status = character(), survey_date = as.Date(character())
+  )
+  surveys <- do.call(rbind, c(list(empty_surveys), unlist(survey_rows, recursive = FALSE)))
+
+  dashboard_data <- generate_revive_dashboard_data(patients_harmonized, events)
+  dashboard_data$surveys <- surveys
+  dashboard_data
 }

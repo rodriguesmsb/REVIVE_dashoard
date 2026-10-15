@@ -6,7 +6,11 @@ ui <- bslib::page_fluid(
     secondary = "#698696", base_font = "Arial, sans-serif",
     heading_font = "Arial, sans-serif", border_radius = "0.8rem"
   ),
-  tags$head(tags$link(rel = "stylesheet", href = "custom.css")),
+  # The version query changes with the file, so browsers reload edited CSS.
+  tags$head(tags$link(
+    rel = "stylesheet",
+    href = paste0("custom.css?v=", as.integer(file.mtime("www/custom.css")))
+  )),
   tags$header(
     class = "revive-header",
     tags$div(class = "revive-brand",

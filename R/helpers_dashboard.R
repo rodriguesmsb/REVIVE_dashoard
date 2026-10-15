@@ -61,6 +61,13 @@ revive_patient_export <- function(patients, patient_characteristics, extra_colum
   export
 }
 
+# Patients ordered by first dated event, then record ID, as in the event plot.
+revive_event_order <- function(events) {
+  events <- events[!is.na(events$event_date), , drop = FALSE]
+  first_dates <- tapply(as.numeric(events$event_date), events$record_id, min)
+  names(first_dates)[order(first_dates, names(first_dates))]
+}
+
 revive_swimmer_plot <- function(events) {
   events <- events[!is.na(events$event_date), , drop = FALSE]
   if (!nrow(events)) return(NULL)
@@ -70,7 +77,7 @@ revive_swimmer_plot <- function(events) {
     first = as.Date(vapply(groups, function(dates) as.numeric(min(dates)), numeric(1)), origin = "1970-01-01"),
     last = as.Date(vapply(groups, function(dates) as.numeric(max(dates)), numeric(1)), origin = "1970-01-01")
   )
-  lanes <- lanes[order(lanes$first, lanes$record_id), ]
+  lanes <- lanes[match(revive_event_order(events), lanes$record_id), ]
   lanes$lane <- seq_len(nrow(lanes))
   events$lane <- lanes$lane[match(events$record_id, lanes$record_id)]
   events$hover <- paste0(
@@ -116,5 +123,76 @@ revive_swimmer_plot <- function(events) {
       displaylogo = FALSE, responsive = TRUE,
       modeBarButtonsToRemove = c("select2d", "lasso2d"),
       toImageButtonOptions = list(format = "png", filename = "REVIVE_swimmer_plot")
+    )
+}
+
+# Survey points to plot: complete and incomplete surveys, plus missing months
+# that fall between two completed surveys of the same patient.
+revive_survey_points <- function(surveys) {
+  surveys |>
+    dplyr::group_by(record_id) |>
+    dplyr::mutate(
+      first_complete = suppressWarnings(min(survey_month[survey_status == "Complete"])),
+      last_complete = suppressWarnings(max(survey_month[survey_status == "Complete"]))
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::filter(
+      survey_status %in% c("Complete", "Incomplete") |
+        (survey_status == "Missing" & survey_month > first_complete & survey_month < last_complete)
+    ) |>
+    dplyr::select(record_id, survey_month, survey_status, survey_date) |>
+    as.data.frame()
+}
+
+# record_order sets the row order; by default patients are sorted by record ID.
+revive_survey_swimmer_plot <- function(surveys, record_order = NULL) {
+  if (!nrow(surveys)) return(NULL)
+  record_ids <- unique(surveys$record_id)
+  if (is.null(record_order)) {
+    record_order <- record_ids[order(suppressWarnings(as.numeric(record_ids)), record_ids)]
+  }
+  lanes <- data.frame(record_id = intersect(record_order, record_ids))
+  lanes$lane <- seq_len(nrow(lanes))
+  surveys$lane <- lanes$lane[match(surveys$record_id, lanes$record_id)]
+  surveys$hover <- paste0(
+    "Patient ", htmltools::htmlEscape(surveys$record_id), "<br>",
+    "Month ", surveys$survey_month, " survey: ", tolower(surveys$survey_status),
+    ifelse(is.na(surveys$survey_date), "", paste0("<br>", format(surveys$survey_date, "%d %b %Y")))
+  )
+  markers <- list(
+    Complete = list(color = "#3182bd", symbol = "triangle-up", size = 12,
+                    line = list(width = 0)),
+    Incomplete = list(color = "#3182bd", symbol = "triangle-up-open", size = 11,
+                      line = list(color = "#3182bd", width = 2)),
+    Missing = list(color = "#a6a6a6", symbol = "triangle-up", size = 12,
+                   line = list(width = 0))
+  )
+  plot <- plotly::plot_ly(height = max(340, nrow(lanes) * 25 + 100))
+  for (status in names(markers)) {
+    subset <- surveys[surveys$survey_status == status, , drop = FALSE]
+    if (!nrow(subset)) next
+    plot <- plotly::add_trace(
+      plot, data = subset, x = ~survey_month, y = ~lane, text = ~hover,
+      type = "scatter", mode = "markers", name = status, marker = markers[[status]],
+      hoverinfo = "text", showlegend = FALSE, inherit = FALSE
+    )
+  }
+  months <- seq_len(max(surveys$survey_month))
+  plot |>
+    plotly::layout(
+      font = list(family = "Arial, sans-serif", color = "#243C4C", size = 12),
+      paper_bgcolor = "#ffffff", plot_bgcolor = "#ffffff",
+      margin = list(l = 100, r = 25, t = 20, b = 65),
+      xaxis = list(title = "Survey month", tickvals = months, ticktext = paste("Month", months),
+                   range = c(0.5, max(months) + 0.5), gridcolor = "#edf2f3", zeroline = FALSE),
+      yaxis = list(title = "Patient ID", tickvals = lanes$lane, ticktext = lanes$record_id,
+                   range = c(nrow(lanes) + 0.7, 0.3), fixedrange = TRUE,
+                   gridcolor = "#f4f7f8", zeroline = FALSE),
+      hovermode = "closest"
+    ) |>
+    plotly::config(
+      displaylogo = FALSE, responsive = TRUE,
+      modeBarButtonsToRemove = c("select2d", "lasso2d"),
+      toImageButtonOptions = list(format = "png", filename = "REVIVE_survey_swimmer_plot")
     )
 }

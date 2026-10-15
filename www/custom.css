@@ -102,6 +102,14 @@ table.dataTable tbody td:first-child { font-weight: 600; }
 .timeline-empty strong { font-size: 13px; font-weight: 600; }
 .timeline-empty p { font-size: 11px; margin: 0; }
 .timeline-note { color: #69818d; font-size: 10px; line-height: 1.5; margin: 14px 2px 0; }
+/* Subgrid rows keep headings, summaries and plots level across both columns. */
+.timeline-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; align-items: start; }
+.timeline-panel { display: grid; grid-row: span 4; grid-template-rows: subgrid; min-width: 0; }
+.timeline-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 0 2px 8px; }
+.timeline-panel-heading h4 { font-size: 14px; font-weight: 600; margin: 0 0 3px; }
+.timeline-panel-heading p { color: #68818d; font-size: 11px; margin: 0; }
+.legend-survey { font-style: normal; font-size: 11px; line-height: 1; color: #3182bd; }
+.legend-survey-missing { color: #a6a6a6; }
 .shiny-output-error-validation { padding: 32px 10px; color: #698696; font-size: 13px; }
 .dashboard-footer { display: flex; justify-content: space-between; color: #78909c; padding: 0 2px 2px; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
 .dashboard-footer span { font-weight: 400; letter-spacing: 0; }
@@ -116,6 +124,7 @@ table.dataTable tbody td:first-child { font-weight: 600; }
   .metric-placeholder { font-size: 20px; }
 }
 @media (max-width: 767px) {
+  .timeline-columns { grid-template-columns: 1fr; }
   .revive-header { padding: 19px 18px; }
   .revive-header h1 { font-size: 24px; }
   .revive-header p { font-size: 11px; }

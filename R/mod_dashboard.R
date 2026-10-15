@@ -46,9 +46,9 @@ mod_dashboard_ui <- function(id, data) {
           tags$p(class = "metric-caption", paste("of", nrow(patients), "patients in the full cohort"))
         ),
         bslib::card(class = "metric-card metric-secondary",
-          tags$div(class = "metric-heading", "Lorem ipsum", icon("chart-simple")),
-          tags$div(class = "metric-placeholder", "Lorem ipsum"),
-          tags$p(class = "metric-caption", "Lorem ipsum dolor sit amet, consectetur adipiscing elit.")
+          tags$div(class = "metric-heading", "Completed surveys", icon("clipboard-list")),
+          textOutput(ns("survey_count"), container = function(...) tags$div(class = "metric-value", ...)),
+          textOutput(ns("survey_caption"), container = function(...) tags$p(class = "metric-caption", ...))
         ),
         bslib::card(class = "metric-card metric-tertiary",
           tags$div(class = "metric-heading", "Lorem ipsum", icon("layer-group")),
@@ -65,16 +65,37 @@ mod_dashboard_ui <- function(id, data) {
       ),
       bslib::card(class = "timeline-card",
         bslib::card_header(
-          tags$div(tags$h3("Infection & vaccination timeline"),
-            tags$p("All recorded events for the selected patients.")),
-          tags$div(class = "event-legend", `aria-label` = "Event legend",
-            tags$span(tags$i(class = "legend-infection", `aria-hidden` = "true"), "Infection"),
-            tags$span(tags$i(class = "legend-vaccination", `aria-hidden` = "true"), "Vaccination"))
+          tags$div(tags$h3("Patient timelines"),
+            tags$p("Recorded events and monthly surveys for the selected patients."))
         ),
         bslib::card_body(
-          tags$div(class = "timeline-summary", textOutput(ns("timeline_summary"))),
-          tags$div(class = "timeline-scroll", uiOutput(ns("swimmer_container"))),
-          tags$p(class = "timeline-note", "Lines connect first and last recorded events; follow-up duration is not available. Reports on the same date may overlap.")
+          tags$div(class = "timeline-columns",
+            tags$div(class = "timeline-panel",
+              tags$div(class = "timeline-panel-heading",
+                tags$div(tags$h4("Infections & vaccinations"),
+                  tags$p("All recorded events for the selected patients.")),
+                tags$div(class = "event-legend", `aria-label` = "Event legend",
+                  tags$span(tags$i(class = "legend-infection", `aria-hidden` = "true"), "Infection"),
+                  tags$span(tags$i(class = "legend-vaccination", `aria-hidden` = "true"), "Vaccination"))
+              ),
+              tags$div(class = "timeline-summary", textOutput(ns("timeline_summary"))),
+              tags$div(class = "timeline-scroll", uiOutput(ns("swimmer_container"))),
+              tags$p(class = "timeline-note", "Lines connect first and last recorded events; follow-up duration is not available. Reports on the same date may overlap.")
+            ),
+            tags$div(class = "timeline-panel",
+              tags$div(class = "timeline-panel-heading",
+                tags$div(tags$h4("Monthly surveys"),
+                  tags$p("Survey status by study month for the patients in the event timeline.")),
+                tags$div(class = "event-legend", `aria-label` = "Survey legend",
+                  tags$span(tags$i(class = "legend-survey", `aria-hidden` = "true", "\u25B2"), "Complete"),
+                  tags$span(tags$i(class = "legend-survey", `aria-hidden` = "true", "\u25B3"), "Incomplete"),
+                  tags$span(tags$i(class = "legend-survey legend-survey-missing", `aria-hidden` = "true", "\u25B2"), "Missing"))
+              ),
+              tags$div(class = "timeline-summary", textOutput(ns("survey_summary"))),
+              tags$div(class = "timeline-scroll", uiOutput(ns("survey_swimmer_container"))),
+              tags$p(class = "timeline-note", "Missing marks a survey not completed between two completed surveys. Surveys missing before the first or after the last completed survey are not shown.")
+            )
+          )
         )
       ),
       tags$footer(class = "dashboard-footer", "REVIVE", tags$span("Patient and event explorer"))
@@ -100,7 +121,20 @@ mod_dashboard_server <- function(id, data) {
       events[!is.na(events$event_date), , drop = FALSE]
     })
 
+    filtered_surveys <- reactive({
+      data$surveys[data$surveys$record_id %in% filtered_patients()$record_id, , drop = FALSE]
+    })
+
     output$patient_count <- renderText(format(nrow(filtered_patients()), big.mark = ","))
+    output$survey_count <- renderText({
+      format(sum(filtered_surveys()$survey_status == "Complete"), big.mark = ",")
+    })
+    output$survey_caption <- renderText({
+      paste(
+        "of", format(nrow(filtered_surveys()), big.mark = ","), "surveys recorded for",
+        format(nrow(filtered_patients()), big.mark = ","), "selected patients"
+      )
+    })
     output$age_label <- renderText({
       if (is.null(input$age) || identical(as.numeric(input$age), as.numeric(data$age_limits))) "All"
       else paste(input$age, collapse = "–")
@@ -173,6 +207,21 @@ mod_dashboard_server <- function(id, data) {
         if (missing_dates) paste0(" · ", missing_dates, " undated reports omitted") else ""
       )
     })
+    # The survey plot follows the infection plot: only patients with dated events.
+    survey_points <- reactive({
+      points <- revive_survey_points(filtered_surveys())
+      points[points$record_id %in% dated_events()$record_id, , drop = FALSE]
+    })
+    output$survey_summary <- renderText({
+      points <- survey_points()
+      status_count <- function(status) sum(points$survey_status == status)
+      paste0(
+        length(unique(points$record_id)), " of ", length(unique(dated_events()$record_id)),
+        " patients with dated events have survey reports · ", status_count("Complete"), " complete · ",
+        status_count("Incomplete"), " incomplete · ", status_count("Missing"), " missing"
+      )
+    })
+
     output$swimmer_container <- renderUI({
       if (!nrow(dated_events())) {
         return(tags$div(class = "timeline-empty", role = "status",
@@ -188,6 +237,22 @@ mod_dashboard_server <- function(id, data) {
       req(nrow(dated_events()) > 0L)
       revive_swimmer_plot(dated_events())
     })
-    list(patients = filtered_patients, table = patient_table, events = filtered_events)
+    output$survey_swimmer_container <- renderUI({
+      if (!nrow(survey_points())) {
+        return(tags$div(class = "timeline-empty", role = "status",
+          icon("clipboard-list", `aria-hidden` = "true"),
+          tags$strong("No survey reports for the patients in the event timeline."),
+          tags$p("Adjust the filters to explore another group of patients.")
+        ))
+      }
+      height <- max(340, length(unique(survey_points()$record_id)) * 25 + 100)
+      plotly::plotlyOutput(session$ns("survey_swimmer_plot"), height = paste0(height, "px"))
+    })
+    output$survey_swimmer_plot <- plotly::renderPlotly({
+      req(nrow(survey_points()) > 0L)
+      revive_survey_swimmer_plot(survey_points(), revive_event_order(dated_events()))
+    })
+    list(patients = filtered_patients, table = patient_table, events = filtered_events,
+         surveys = filtered_surveys)
   })
 }
