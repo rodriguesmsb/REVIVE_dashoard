@@ -25,6 +25,51 @@ read_revive_event_slots <- function(paths, type_fields, date_fields) {
     dplyr::mutate(event_date = as.Date(event_date, format = "%Y-%m-%d"))
 }
 
+# Monthly survey status from the REDCap survey export (redcap_event_name is
+# month_<n>_arm_1). The timestamp holds a date when complete, "[not completed]"
+# when partially filled, and is blank when the survey was never started.
+# An event absent from the report is also missing, so gaps up to each
+# participant's last reported month are filled; later months may not be due yet.
+read_revive_surveys <- function(paths) {
+  reports <- lapply(paths, function(path) {
+    readr::read_csv(
+      path,
+      col_types = readr::cols(.default = readr::col_character())
+    ) |>
+      dplyr::select(record_id, redcap_event_name, monthly_survey_timestamp)
+  })
+  empty_reports <- data.frame(
+    record_id = character(), redcap_event_name = character(),
+    monthly_survey_timestamp = character()
+  )
+  surveys <- dplyr::bind_rows(empty_reports, reports) |>
+    dplyr::transmute(
+      record_id,
+      survey_month = as.integer(sub("^month_(\\d+)_.*$", "\\1", redcap_event_name)),
+      survey_status = dplyr::case_when(
+        is.na(monthly_survey_timestamp) | monthly_survey_timestamp == "" ~ "Missing",
+        monthly_survey_timestamp == "[not completed]" ~ "Incomplete",
+        .default = "Complete"
+      ),
+      survey_date = dplyr::if_else(
+        survey_status == "Complete",
+        as.character(as.Date(monthly_survey_timestamp, format = "%Y-%m-%d")),
+        NA_character_
+      )
+    ) |>
+    dplyr::filter(!is.na(survey_month)) |>
+    dplyr::distinct(record_id, survey_month, .keep_all = TRUE)
+
+  expected_months <- surveys |>
+    dplyr::group_by(record_id) |>
+    dplyr::reframe(survey_month = seq_len(max(survey_month)))
+
+  expected_months |>
+    dplyr::left_join(surveys, by = c("record_id", "survey_month")) |>
+    dplyr::mutate(survey_status = dplyr::coalesce(survey_status, "Missing")) |>
+    dplyr::arrange(record_id, survey_month)
+}
+
 generate_revive_json <- function(data_dir = "data", output_dir = "data/preprocessed",
                                  record_ids = character(), skip_files = character()) {
   paths <- list.files(data_dir, full.names = TRUE)
@@ -38,6 +83,7 @@ generate_revive_json <- function(data_dir = "data", output_dir = "data/preproces
   filenames <- tolower(basename(csv_files))
   infection_files <- csv_files[grepl("infection", filenames, fixed = TRUE)]
   vaccine_files <- csv_files[grepl("vaccin", filenames, fixed = TRUE)]
+  survey_files <- csv_files[grepl("survey", filenames, fixed = TRUE)]
 
   infections <- read_revive_event_slots(
     infection_files,
@@ -71,12 +117,17 @@ generate_revive_json <- function(data_dir = "data", output_dir = "data/preproces
       vaccine_date = as.character(event_date)
     )
 
+  surveys <- read_revive_surveys(survey_files)
+
   # Keep every reported slot. No event is discarded because another report
   # has the same date. Participants without reports have empty arrays.
-  record_ids <- unique(c(record_ids, infections$record_id, vaccinations$record_id))
+  record_ids <- unique(c(
+    record_ids, infections$record_id, vaccinations$record_id, surveys$record_id
+  ))
   people <- lapply(record_ids, function(id) {
     patient_infections <- infections[infections$record_id == id, ]
     patient_vaccinations <- vaccinations[vaccinations$record_id == id, ]
+    patient_surveys <- surveys[surveys$record_id == id, ]
     list(
       record_id = id,
       infections = lapply(seq_len(nrow(patient_infections)), function(row) {
@@ -86,6 +137,11 @@ generate_revive_json <- function(data_dir = "data", output_dir = "data/preproces
       vaccinations = lapply(seq_len(nrow(patient_vaccinations)), function(row) {
         list(vaccine_type = patient_vaccinations$vaccine_type[row],
              vaccine_date = patient_vaccinations$vaccine_date[row])
+      }),
+      surveys = lapply(seq_len(nrow(patient_surveys)), function(row) {
+        list(survey_month = patient_surveys$survey_month[row],
+             survey_status = patient_surveys$survey_status[row],
+             survey_date = patient_surveys$survey_date[row])
       })
     )
   })
